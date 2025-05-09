@@ -35,7 +35,7 @@ $$
     d_{i} &= \sum _{j=1}^{i} e^{x_j - m_{i}} \\
             &= \sum _{j=1}^{i-1} e^{x_j - m_{i}} + e^{x_i - m_{i}} \\
             &= d_{i-1} e^{m_{i-1} - m_{i}} + e^{x_{i} - m_{i}}
-\end{split}  
+\end{split}
 $$
 
 - Attention Out 更新‌
@@ -47,7 +47,7 @@ $$
             &= \sum _{j=1}^{i-1} \frac{e^{x_j - m_{i-1}}}{d_{i-1}} \frac{e^{x_j - m_{i}}}{e^{x_j - m_{i-1}}} \frac{d_{i-1}}{d_i} V[j, :] + \frac{e^{x_i - m_{i}}}{d_{i}} V[i, :] \\
             &= (\sum _{j=1}^{i-1} \frac{e^{x_j - m_{i-1}}}{d_{i-1}} V[j, :]) \frac{e^{x_j - m_{i}}}{e^{x_j - m_{i-1}}} \frac{d_{i-1}}{d_i} V[j, :] + \frac{e^{x_i - m_{i}}}{d_{i}} V[i, :] \\
             &= O_{i-1} \frac{d_{i-1}}{d_i} e^{m_{i-1} - m_i} + \frac{e^{x_i - m_{i}}}{d_{i}} V[i, :] \\
-\end{split}  
+\end{split}
 $$
 
 从上述公式可以看出，我们需要在计算分块过程中维护两个基本中间结果变量 $m$ 和 $d$，这一点与 Online Softmax 一致，毕竟 Attention 就是在 Softmax 的基础上右乘一个 V 矩阵。而最终当前分块的 Attention Out（$O_{i}$）则跟上一个分块的 $O_{i-1}$、$m_{i-1}$、$d_{i-1}$ 有关，而 $O$、$m$、$d$ 三个变量占用的内存空间与分块大小有关，$m$、$d$ 作为需要维护的中间结果变量相比与传统 Attention 的 $QK^T$ 与 $Softmax(QK^T)$ 矩阵从 $O(N^2)$ 降低到了 $O(N)$，极大地降低了显存占用量且可以轻松放入 GPU shared memory 中参与计算，从而显著提升计算效率。
@@ -285,7 +285,7 @@ printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, 
 ```
 
 现在来看一下 Kernel 代码，首先是两层循环，第一层循环在 KV 的序列维度上移动，每次加载形状为 `[Bc, d]` 的分块到共享内存 `Kj` 和 `Vj` 中存储用于后续计算，这里源码用了一个比较 navie 的方式即每个线程单独处理自己的一行元素，在当前行上循环 `d` 次，这会带来两个严重问题：
-  
+
 - 对于全局内存来说，同一 warp 内每个线程每次访问的元素间隔了一行（即 `d` 个元素），这回导致非合并访问，非合并访问会使得 L2 缓存命中率降低，甚至每个线程可能都需要单独的内存访问事务从全局内存中加载元素，这将极大降低全局内存访问性能。
 - 对于共享内存来说，同一 warp 内每个线程每次访问的元素也间隔了一行（即 `d` 个元素），而 `d` 通常是 `32` 的倍数，这将导致严重的 bank conflict，极大地降低共享内存访问性能。
 
@@ -1060,4 +1060,5 @@ __global__ void flashAttentionKernel_v3(const float *__restrict__ Q, const float
 
 ## 8 小结
 本文针对 Flash Attention 提出背景和计算原理进行了介绍，针对开源项目 Flash Attention Minimal 实现思路进行了解析和点评，并逐步优化了 Flash Attention 算子，给出了 3 个版本的 CUDA Kernel 并对实现思路进行详细介绍，本文源代码地址如下，有兴趣的读者可以阅读。
+
 > https://github.com/caiwanxianhust/flash-attention-opt
