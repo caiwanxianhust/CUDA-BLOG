@@ -198,7 +198,7 @@ LDMATRIX_X2(RB[0], RB[1], s_b + (lane_id % 8) * 16 + ((lane_id / 8) % 2) * 8);
 ```cpp
 #define LDMATRIX_X2_T(R0, R1, addr) asm volatile("ldmatrix.sync.aligned.x2.trans.m8n8.shared.b16 {%0, %1}, [%2];\n" : "=r"(R0), "=r"(R1) : "l"(__cvta_generic_to_shared(addr)))
 
-LDMATRIX_X2(RB[0], RB[1], s_b + (lane_id % 16) * 16);
+LDMATRIX_X2_T(RB[0], RB[1], s_b + (lane_id % 16) * 8);
 ```
 
 从代码中可以看出，源地址的传参参考矩阵 `A` 用行主序的方式计算索引即可，加载的时候指令会根据 `.trans` 参数自行完成 warp 内线程寄存器数据的交换，交换完成后矩阵 `B` 就持有  `0 1`、`8 9` 共 4 个元素，这正是我们所期望的。
