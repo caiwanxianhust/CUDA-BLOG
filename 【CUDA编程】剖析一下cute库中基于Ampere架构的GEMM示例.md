@@ -84,7 +84,7 @@ auto sC_layout = make_layout(make_shape(bM, bN));
 
 ![](https://mmbiz.qpic.cn/sz_mmbiz_png/GJUG0H1sS5pegfwH67hFksnlLcRrEpicUiaUZicVaqVG1gXTbXibfBFw5CoUCXR23QUylae5m9HSjf025Qazx99JJQ/640?wx_fmt=png&amp;from=appmsg)
 
-无论是从 global memory load 到 shared memory，还是从 shared memory load 到寄存器，都是按 `128bit` 一次 load，所以连续的 `8` 个元素作为一个整体来进行 load，根据 Layout 可知（参考红色箭头），在一次 `m8n8` 的 LDSM 指令中，实际加载的元素是上述矩阵的一整行（`0-7`、`64-71`、`128-135`、···，参考蓝色矩形框），正好全部分属在第 `0-3` bank，存在 bank conflict。加入 Layout 后，`swizzle_atom` 内存排布变成如下所示：
+无论是从 global memory load 到 shared memory，还是从 shared memory load 到寄存器，都是按 `128bit` 一次 load，所以连续的 `8` 个元素作为一个整体来进行 load，根据 Layout 可知（参考红色箭头），在一次 `m8n8` 的 LDSM 指令中，由于 `BK` 为 `64`，实际加载的元素是上述矩阵的一整行（`0-7`、`64-71`、`128-135`、···，参考蓝色矩形框），正好全部分属在第 `0-3` bank，存在 bank conflict。加入 Layout 后，`swizzle_atom` 内存排布变成如下所示：
 
 ![](https://mmbiz.qpic.cn/sz_mmbiz_png/GJUG0H1sS5pegfwH67hFksnlLcRrEpicUWEuW91OtvDJ8R3XRneia1l6HdlOyVgZtsG4WWH0DRU9iaC5P4yYQhJ2g/640?wx_fmt=png&amp;from=appmsg)
 
@@ -498,22 +498,22 @@ tCrC : ptr[16b](0x7f7adafffbf0) o ((_2,_2),_4,(_2,_4)):((_1,_2),_4,(_16,_32))
 `tXsA` 表示对 shared memory 中的 Tensor `sA` 的线程级划分，`tXrA` 是对 `tCrA` 调用 `retile_D` 后生成，定义数据从共享内存到寄存器的目标排列规则（如分块大小、维度顺序），指导硬件执行ldmatrix等加载指令，本质上只是重新组织一下线程布局，满足 s2r copy 的操作。拷贝过程就是将 `tXsA` 中的元素移动到 `tCrA` 中。
 
 ```cpp
-  //
-  // Copy Atom retiling
-  //
+//
+// Copy Atom retiling
+//
 
-  TiledCopy s2r_copy_a = make_tiled_copy_A(s2r_atom_a, mma);
-  ThrCopy   s2r_thr_copy_a = s2r_copy_a.get_slice(threadIdx.x);
-  Tensor tXsA = s2r_thr_copy_a.partition_S(sA);                        // (CPY,MMA_M,MMA_K,PIPE)
-  Tensor tXrA = s2r_thr_copy_a.retile_D(tCrA);                         // (CPY,MMA_M,MMA_K)
+TiledCopy s2r_copy_a = make_tiled_copy_A(s2r_atom_a, mma);
+ThrCopy   s2r_thr_copy_a = s2r_copy_a.get_slice(threadIdx.x);
+Tensor tXsA = s2r_thr_copy_a.partition_S(sA);                        // (CPY,MMA_M,MMA_K,PIPE)
+Tensor tXrA = s2r_thr_copy_a.retile_D(tCrA);                         // (CPY,MMA_M,MMA_K)
 
-  TiledCopy s2r_copy_b = make_tiled_copy_B(s2r_atom_b, mma);
-  ThrCopy   s2r_thr_copy_b = s2r_copy_b.get_slice(threadIdx.x);
-  Tensor tXsB = s2r_thr_copy_b.partition_S(sB);                        // (CPY,MMA_N,MMA_K,PIPE)
-  Tensor tXrB = s2r_thr_copy_b.retile_D(tCrB);                         // (CPY,MMA_N,MMA_K)
+TiledCopy s2r_copy_b = make_tiled_copy_B(s2r_atom_b, mma);
+ThrCopy   s2r_thr_copy_b = s2r_copy_b.get_slice(threadIdx.x);
+Tensor tXsB = s2r_thr_copy_b.partition_S(sB);                        // (CPY,MMA_N,MMA_K,PIPE)
+Tensor tXrB = s2r_thr_copy_b.retile_D(tCrB);                         // (CPY,MMA_N,MMA_K)
 ```
 
-下面我们来看一下，`CPY`、`MMA_M`、`MMA_N`、`MMA_K`、`PIPE` 这几个值的含义。`CPY` 由 s2r_Copy_Atom 决定，在 2.2 节中有介绍，s2r_Copy_Atom 使用的是 `SM75_U32x4_LDSM_N`，与之对应的PTX 指令为 `ldmatrix.sync.aligned.x4.m8n8.shared.b16`，这个指令单个线程持有 `8` 个元素，所以 `CPY` 是 `8`。`MMA_M`、`MMA_N`、`MMA_K` 分别是站在 thread block 维度，在 M\N\K 三个方向的重复次数，已知 TiledCopy 的形状为 `Tile<_32,_32,_16>`，而 `(BLK_M, BLK_N, BLK_K)` 分别为 `(128,128,64)`，所以 `MMA_M`、`MMA_N`、`MMA_K` 都是 `4`。
+下面我们来看一下，`CPY`、`MMA_M`、`MMA_N`、`MMA_K`、`PIPE` 这几个值的含义。`CPY` 由 s2r_Copy_Atom 决定，在 2.2 节中有介绍，s2r_Copy_Atom 使用的是 `SM75_U32x4_LDSM_N`，与之对应的PTX 指令为 `ldmatrix.sync.aligned.x4.m8n8.shared.b16`，这个指令单个线程持有 `8` 个元素，所以 `CPY` 是 `8`。`MMA_M`、`MMA_N`、`MMA_K` 分别是站在 thread block 维度，在 M\N\K 三个方向的重复次数，已知 TiledCopy 的形状为 `Tile<_32,_32,_16>`，而 `(BLK_M, BLK_N, BLK_K)` 分别为 `(128,128,64)`，所以 `MMA_M`、`MMA_N`、`MMA_K` 都是 `4`。`PIPE` 就是流水线缓冲区（管道）参数，这里为 `3`。
 
 ```cpp
 tXsA : smem_ptr[16b](0x7f7adc000000) o ((_8,_1),_4,(_2,_2),(_1,_3)):((_1,_0),_2048,(144,288),(_0,_8192))
@@ -522,5 +522,131 @@ tXsB : smem_ptr[16b](0x7f7adc00c000) o ((_8,_1),_4,(_2,_2),(_1,_3)):((_1,_0),_20
 tXrB : ptr[16b](0x7f7adafffaf0) o (((_4,_2),_1),_4,_4):(((_1,_16),_0),_4,_32)
 ```
 
+### 3.7 缓冲区（管道）初始化
 
+首先定义了共享内存中当前的缓冲区索引 `smem_pipe_read` 和 `smem_pipe_write`，在共享内存中通过 “缓冲区” 机制循环读写，避免数据覆盖冲突。`K_PIPE_MAX` 是共享内存中缓冲区的总数，这里是 `3`。
+
+也就是说，初始时，从索引 `0` 的缓冲区读取数据，向最后一个缓冲区（`K_PIPE_MAX-1`）写入数据，形成循环缓冲的初始状态。
+
+```cpp
+// 当前从共享内存读取数据的管道索引
+int smem_pipe_read  = 0;
+// 当前向共享内存写入数据的管道索引
+int smem_pipe_write = K_PIPE_MAX-1;
+
+// 缓冲区切片
+Tensor tXsA_p = tXsA(_,_,_,smem_pipe_read);
+Tensor tXsB_p = tXsB(_,_,_,smem_pipe_read);
+
+// Size of the register pipeline
+auto K_BLOCK_MAX = size<2>(tCrA);
+```
+
+`tXsA` 的形状为 `(CPY,MMA_M,MMA_K,PIPE)`，这里根据第三个维度（也就是缓冲区维度）进行切片，把当前 `smem_pipe_read` 对应的 tile 记为 `tXsA_p`，B 矩阵也是同理。
+
+然后源码中又定义了一个 `K_BLOCK_MAX` 参数，来自 `tCrA` 的第二个维度，也就是 `MMA_K`（这里是 `8`，指的是在 K 维度上的循环次数，也是寄存器中可并行处理的 K 维度分块数，决定了寄存器级流水线的深度。），这个参数用于后续在 K 维度上的循环 MMA 操作。
+
+### 3.8 初始化：从 shared memory 预加载数据到寄存器
+
+在从 shared memory 预加载数据到寄存器之前，首先要确保待加载的数据已经从 global memory 拷贝到 shared memory，代码中调用了 `cp_async_wait<K_PIPE_MAX-2>()` 函数等待第一个拷贝操作完成，也就是说此时 3.4.2 节中第一个 tile 已经拷贝到了 shared memory，再加上一个  `__syncthreads()`，确保其他线程也阻塞在 wait 操作后，在 `__syncthreads()` 后， shared memory 中第一个 tile 的数据对 block 内线程都可见。注意，这里说的一个 tile 是 block 层级的 tile，形状为 `(BLK_M, BLK_N, BLK_K)` ，即 `(128,128,64)`。
+
+随后在 block tile 的 K 维度上进行流水线拷贝，先从 shared memory 拷贝第一个 tile 到寄存器。这一步在计算前异步进行，避免计算时等待内存访问，隐藏延迟。
+
+```cpp
+// PREFETCH register pipeline
+if (K_BLOCK_MAX > 1) {
+    // Wait until our first prefetched tile is loaded in
+    cp_async_wait<K_PIPE_MAX-2>();
+    __syncthreads();
+
+    // Prefetch the first rmem from the first k-tile
+    copy(s2r_atom_a, tXsA_p(_,_,Int<0>{}), tXrA(_,_,Int<0>{}));
+    copy(s2r_atom_b, tXsB_p(_,_,Int<0>{}), tXrB(_,_,Int<0>{}));
+}
+```
+
+### 3.9 主循环：流水线化的读写与计算
+
+主循环通过`while (k_tile_count > -(K_PIPE_MAX-1))`控制全局内存分块的迭代，内部嵌套寄存器分块的循环（`for (int k_block = 0; ...)`），实现三级操作的 overlap。
+
+```cpp
+CUTE_NO_UNROLL  // 不展开外层循环，避免编译优化破坏流水线
+while (k_tile_count > -(K_PIPE_MAX-1))
+{
+    CUTE_UNROLL  // 展开内层循环，提升并行效率
+    for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+        // 步骤1：更新共享内存读取管道（当处理到寄存器管道最后一个分块时）
+        if (k_block == K_BLOCK_MAX - 1) {
+            tXsA_p = tXsA(_,_,_,smem_pipe_read);  // 切换到新的读取管道
+            tXsB_p = tXsB(_,_,_,smem_pipe_read);
+            cp_async_wait<K_PIPE_MAX-2>();        // 等待异步复制完成
+            __syncthreads();                      // 线程同步
+        }
+
+        // 步骤2：smem→rmem复制（预取下一个寄存器分块）
+        auto k_block_next = (k_block + Int<1>{}) % K_BLOCK_MAX;  // 下一个寄存器分块索引
+        copy(s2r_atom_a, tXsA_p(_,_,k_block_next), tXrA(_,_,k_block_next));  // 共享内存→寄存器
+        copy(s2r_atom_b, tXsB_p(_,_,k_block_next), tXrB(_,_,k_block_next));
+
+        // 步骤3：gmem→smem复制（加载下一个全局内存分块到共享内存）
+        if (k_block == 0) {
+            copy(copy_a, tAgA(_,_,_,k_tile_next), tAsA(_,_,_,smem_pipe_write));  // 全局内存→共享内存
+            copy(copy_b, tBgB(_,_,_,k_tile_next), tBsB(_,_,_,smem_pipe_write));
+            cp_async_fence();  // 确保异步复制指令提交
+
+            // 更新全局内存分块索引和共享内存管道
+            --k_tile_count;                // 剩余全局分块数减1
+            if (k_tile_count > 0) { ++k_tile_next; }  // 下一个全局分块索引
+            smem_pipe_write = smem_pipe_read;         // 写入管道切换到当前读取管道（循环复用）
+            smem_pipe_read = (smem_pipe_read == K_PIPE_MAX-1) ? 0 : smem_pipe_read+1;  // 读取管道后移
+        }
+
+        // 步骤4：寄存器级GEMM计算（当前分块）
+        gemm(mma, tCrA(_,_,k_block), tCrB(_,_,k_block), tCrC);
+    }
+}
+```
+
+从代码中可以看出，内循环是在 `MMM_K` 维度的循环，每次从 shared memory 拷贝一个 tile 到寄存器。在此之前先进行一次判断，当前是否处理完最后一个 tile，如果已经处理完最后一个 tile，那么此时 shared memory 中的 `tXsA_p` 需要更新，即指向新的缓冲区块。同时，这里也有一个等待异步拷贝完成的动作，这里等待的是什么呢？实际上这里等待的就是下一个要处理的 block tile 的 g2s 异步拷贝操作完成。
+
+第二步进行 s2r 的拷贝工作，假设现在 `k_block == 0`，此时当前 tile 已拷贝到寄存器中了，根据流水线思想，为了让下一个 tile 的加载与当前 tile 的 gemm 计算 overlap，所以此时也要预加载下一个 tile，看起来预加载下一个 tile 和当前 tile 的 gemm 计算是有先后的，但这只是指令发出的顺序，实际执行的时候访存和计算指令对应不同的硬件单元，所以这俩实际是并行的。
+
+![](https://mmbiz.qpic.cn/sz_mmbiz_png/GJUG0H1sS5oVVSUWia61Rd2VcDJ6ibopsU1icP5HtbLfpdQ0svm6vGA6n75lX3GqkzdoDDw1WibeHzK2ibubNibU6y7Q/640?wx_fmt=png&amp;from=appmsg)
+
+第三步进行 g2s 的拷贝工作，假设现在 `k_block == 0`，这时候当前使用的 block tile 的数据已经早就拷贝完成，下一个 block tile 也在拷贝中，此时可以同时提交下下一个 block tile 的异步拷贝操作，提交后更新 剩余的 tile 数量 `k_tile_count`、标识索引 `k_tile_next` 以及 shared memory 中的缓冲区索引。下一次 g2s 写入的时候，当前  block tile 已经处理完了，所以可以让 `smem_pipe_write = smem_pipe_read`，`smem_pipe_read` 也指向下一个位置。
+
+第四步进行当前 k_block tile 的 gemm 计算，这一步操作与内循环内的其他内存拷贝操作是并行的。
+
+主循环内流水线重叠的关键逻辑总结如下：
+
+1. **三级操作并行**：
+   - g2s 拷贝：当处理寄存器分块 `k_block=0` 时，异步加载下一个全局分块到共享内存的 `smem_pipe_write` 管道。注意 g2s 的拷贝过程是异步进行的，需要等待完成机制确保当前处理的 tile 完成拷贝。
+   - s2r 拷贝：对每个 `k_block`，预取下一个寄存器分块（`k_block_next`），与当前  gemm 计算重叠。要注意的是，这里的拷贝操作基于的是 ldmatrix 指令，不是异步操作，overlap 体现在下一个分块的拷贝和当前分块的 gemm 计算上。
+   - gemm 计算：对当前寄存器分块 `k_block` 执行 GEMM（如 WMMA 矩阵乘加），与内存复制并行。
+2. **共享内存管道循环复用**：
+   - 读取缓冲区（`smem_pipe_read`）和写入缓冲区（`smem_pipe_write`）通过循环索引更新，避免数据覆盖，实现**边写边读**。
+3. **异步与同步**：
+   - `cp_async_fence`：确保异步拷贝指令有序提交。
+   - `cp_async_wait`：等待前序异步拷贝完成，确保数据就绪。
+   - `__syncthreads`：线程块内同步，避免读写冲突。
+
+### 3.10 Epilogue
+
+`axpby(alpha, tCrC, beta, tCgC);` 执行的是一个线性组合运算，数学表达式可以表示为：
+
+```cpp
+tCgC = alpha * tCrC + beta * tCgC
+```
+
+其中：
+
+- `tCrC` 通常是本次矩阵乘法计算得到的中间结果，存储在寄存器中
+- `tCgC` 是最终输出矩阵 C 的全局内存 Tensor
+- `alpha` 和 `beta` 是标量系数（来自 gemm 函数的参数）
+
+这对应了 BLAS 规范中 gemm 函数的定义：`C = alpha*A*B + beta*C`，这里的 `axpby` 操作正是实现了这个公式的最后一步计算。
+
+## 4 小结
+
+本文将以 cute 库中基于Ampere架构的 GEMM 示例代码为样例，逐步介绍这些 GEMM 的优略策略如何通过 cute 库来落地实现。由于笔者水平有限，文中必有错漏之处，欢迎读者交流斧正。
 
